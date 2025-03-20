@@ -5,10 +5,98 @@ from dotenv import load_dotenv
 from audiorecorder import audiorecorder
 from datetime import datetime
 import base64
+import json
+import requests
 
 load_dotenv()
 
 client = openai.OpenAI()
+
+def get_weather(location):
+    response = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude=37.5665&longitude=126.9780&current_weather=true")
+    if response.status_code == 200:
+        data = response.json()
+        return f"현재 {location}의 온도는 {data['current_weather']['temperature']}°C 입니다."
+    return "날씨 정보를 가져오는데 실패했습니다."
+
+def get_exchange_rate():
+    response = requests.get("https://api.exchangerate-api.com/v4/latest/USD")
+    if response.status_code == 200:
+        data = response.json()
+        rate = data['rates'].get('KRW', '알 수 없음')
+        return f"현재 원-달러 환율은 1달러당 {rate}원 입니다."
+    return "환율 정보를 가져오는데 실패했습니다."
+
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "특정 장소의 날씨를 조회합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string"}
+            },
+            "required": ["location"],
+            "additionalProperties": False
+        },
+        "strict": True
+    }
+}, {
+    "type": "function",
+    "function": {
+        "name": "get_exchange_rate",
+        "description": "현재 원-달러 환율을 조회합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False
+        },
+        "strict": True
+    }
+}]
+
+def generate_chat_response(messages):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini", 
+        messages=messages,
+        tools=tools,
+        tool_choice="auto"
+    )
+
+    tool_calls = response.choices[0].message.tool_calls
+    if tool_calls:
+        messages.append({
+            "role": "assistant",
+            "tool_calls": tool_calls
+        })
+
+        for tool_call in tool_calls:
+            func_name = tool_call.function.name
+            func_args = json.loads(tool_call.function.arguments)
+            if func_name == "get_weather":
+                result =  get_weather(func_args["location"])
+            elif func_name == "get_exchange_rate":
+                result = get_exchange_rate()
+            else:
+                result = "기능을 찾을 수 없습니다."
+            
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,   
+                "content": str(result)
+            })
+
+        final_response = client.chat.completions.create(
+            model="gpt-4o-mini", 
+            messages=messages,
+            tools=tools
+        )
+
+        return final_response.choices[0].message.content
+
+    else:
+        return response.choices[0].message.content
 
 def speech_to_text(speech):
     filename='input.mp3'
@@ -23,13 +111,6 @@ def speech_to_text(speech):
     os.remove(filename)
     
     return transcription.text
-
-def generate_chat_response(messages):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini", 
-        messages=messages
-    )
-    return response.choices[0].message.content
 
 def text_to_speech(text):
     filename = "output.mp3"
